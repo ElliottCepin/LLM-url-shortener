@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -13,28 +14,56 @@ const (
 	shortcodeAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 )
 
-// store holds the in-memory mapping from shortcode to original URL.
+// entry is the per-shortcode record kept in the store.
+type entry struct {
+	url          string
+	createdAt    time.Time
+	clicks       int
+}
+
+// store holds the in-memory mapping from shortcode to entry.
 // All access must go through its methods so the mutex is honored.
 type store struct {
-	mu   sync.RWMutex
-	urls map[string]string
+	mu      sync.RWMutex
+	entries map[string]*entry
 }
 
 func newStore() *store {
-	return &store{urls: make(map[string]string)}
+	return &store{entries: make(map[string]*entry)}
 }
 
 func (s *store) put(code, url string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.urls[code] = url
+	s.entries[code] = &entry{
+		url:       url,
+		createdAt: time.Now(),
+	}
 }
 
-func (s *store) get(code string) (string, bool) {
+// resolve looks up a code, increments its click counter, and returns the URL.
+// The increment happens atomically with the lookup so concurrent redirects
+// can't lose counts.
+func (s *store) resolve(code string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.entries[code]
+	if !ok {
+		return "", false
+	}
+	e.clicks++
+	return e.url, true
+}
+
+// stats returns a snapshot of the click count and creation time for a code.
+func (s *store) stats(code string) (clicks int, createdAt time.Time, ok bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	url, ok := s.urls[code]
-	return url, ok
+	e, exists := s.entries[code]
+	if !exists {
+		return 0, time.Time{}, false
+	}
+	return e.clicks, e.createdAt, true
 }
 
 // generateShortcode returns a random string of shortcodeLen characters
@@ -82,8 +111,9 @@ func shortenHandler(s *store) http.HandlerFunc {
 	}
 }
 
-// redirectHandler handles GET /{code}. It looks up the code in the store and
-// responds with a 301 redirect to the original URL, or 404 if unknown.
+// redirectHandler handles GET /{code}. It looks up the code in the store,
+// increments its click counter, and responds with a 301 redirect to the
+// original URL, or 404 if unknown.
 func redirectHandler(s *store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -97,7 +127,7 @@ func redirectHandler(s *store) http.HandlerFunc {
 			return
 		}
 
-		url, ok := s.get(code)
+		url, ok := s.resolve(code)
 		if !ok {
 			http.NotFound(w, r)
 			return
@@ -107,12 +137,49 @@ func redirectHandler(s *store) http.HandlerFunc {
 	}
 }
 
+// statsHandler handles GET /stats/{code}. It responds with a JSON body
+// containing the click count and creation date for the given shortcode,
+// or 404 if the code is unknown.
+func statsHandler(s *store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		code := strings.TrimPrefix(r.URL.Path, "/stats/")
+		if code == "" || strings.Contains(code, "/") {
+			http.NotFound(w, r)
+			return
+		}
+
+		clicks, createdAt, ok := s.stats(code)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+
+		resp := struct {
+			Clicks       int       `json:"clicks"`
+			CreationDate time.Time `json:"creation_date"`
+		}{
+			Clicks:       clicks,
+			CreationDate: createdAt,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
 // handler returns the top-level HTTP handler for the URL shortener.
 // Each call constructs a fresh store, so tests get isolated state.
 func handler() http.Handler {
 	s := newStore()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/shorten", shortenHandler(s))
+	mux.HandleFunc("/stats/", statsHandler(s))
 	mux.HandleFunc("/", redirectHandler(s))
 	return mux
 }
