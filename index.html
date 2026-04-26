@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>URL Shortener</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #1a1a1a; background: #f8f8f6; padding: 2rem; line-height: 1.6;
+    }
+    .container { max-width: 600px; margin: 0 auto; }
+    h1 { font-size: 22px; font-weight: 500; margin-bottom: 0.25rem; }
+    .subtitle { font-size: 14px; color: #6b6b68; margin-bottom: 2rem; }
+    .section { margin-bottom: 2rem; }
+    .section-label {
+      font-size: 12px; color: #888780; text-transform: uppercase;
+      letter-spacing: 0.06em; margin-bottom: 0.5rem; font-weight: 500;
+    }
+    .input-row { display: flex; gap: 8px; margin-bottom: 10px; }
+    input[type="text"] {
+      flex: 1; padding: 8px 12px; font-size: 14px; border: 1px solid #d3d1c7;
+      border-radius: 8px; background: #fff; outline: none; transition: border-color 0.15s;
+    }
+    input[type="text"]:focus { border-color: #888780; }
+    button {
+      padding: 8px 18px; font-size: 14px; font-weight: 500; cursor: pointer;
+      border: 1px solid #d3d1c7; border-radius: 8px; background: #fff;
+      transition: background 0.15s, transform 0.1s;
+    }
+    button:hover { background: #f1efe8; }
+    button:active { transform: scale(0.98); }
+    .result-box {
+      background: #f1efe8; border-radius: 8px; padding: 10px 14px;
+      font-size: 14px; color: #6b6b68; min-height: 40px;
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .result-box a { color: #185fa5; text-decoration: none; word-break: break-all; }
+    .result-box a:hover { text-decoration: underline; }
+    .copy-btn {
+      margin-left: auto; cursor: pointer; background: none; border: none;
+      color: #888780; font-size: 12px; padding: 2px 8px; border-radius: 6px;
+    }
+    .copy-btn:hover { background: #d3d1c7; }
+    .error { color: #a32d2d; }
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .stat-card { background: #f1efe8; border-radius: 8px; padding: 1rem; }
+    .stat-card .label { font-size: 12px; color: #888780; margin-bottom: 4px; }
+    .stat-card .value { font-size: 20px; font-weight: 500; }
+    .history-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 0; border-bottom: 1px solid #e8e6df; font-size: 14px;
+    }
+    .history-item:last-child { border-bottom: none; }
+    .history-item .short {
+      color: #185fa5; cursor: pointer; font-weight: 500; min-width: 100px;
+    }
+    .history-item .short:hover { text-decoration: underline; }
+    .history-item .original {
+      color: #888780; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; flex: 1; margin-left: 12px; text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>URL shortener</h1>
+    <p class="subtitle">Shorten, redirect, and track your links.</p>
+
+    <div class="section">
+      <div class="section-label">Shorten a URL</div>
+      <div class="input-row">
+        <input type="text" id="url-input" placeholder="https://example.com/some/long/path" />
+        <button onclick="shortenUrl()">Shorten</button>
+      </div>
+      <div class="result-box" id="shorten-result">Result will appear here</div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">Look up stats</div>
+      <div class="input-row">
+        <input type="text" id="code-input" placeholder="Shortcode (e.g. aBc123)" />
+        <button onclick="getStats()">Look up</button>
+      </div>
+      <div id="stats-result">
+        <div class="result-box">Enter a shortcode above</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">History (this session)</div>
+      <div id="history-list">
+        <div class="result-box" style="font-style: italic;">No URLs shortened yet</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const history = [];
+    const BASE = window.location.origin;
+
+    async function shortenUrl() {
+      const input = document.getElementById('url-input');
+      const result = document.getElementById('shorten-result');
+      const url = input.value.trim();
+      if (!url) { result.innerHTML = '<span class="error">Please enter a URL</span>'; return; }
+
+      result.textContent = 'Shortening\u2026';
+      try {
+        const res = await fetch(BASE + '/shorten', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+        if (!res.ok) throw new Error('Server returned ' + res.status);
+        const code = await res.text();
+        const shortUrl = BASE + '/' + code;
+        result.innerHTML =
+          '<a href="' + shortUrl + '" target="_blank">' + shortUrl + '</a>' +
+          '<button class="copy-btn" onclick="navigator.clipboard.writeText(\'' + shortUrl + '\');this.textContent=\'Copied!\'">Copy</button>';
+        history.unshift({ code, url });
+        input.value = '';
+        renderHistory();
+      } catch (e) {
+        result.innerHTML = '<span class="error">' + e.message + '</span>';
+      }
+    }
+
+    async function getStats() {
+      const code = document.getElementById('code-input').value.trim();
+      const container = document.getElementById('stats-result');
+      if (!code) {
+        container.innerHTML = '<div class="result-box"><span class="error">Please enter a shortcode</span></div>';
+        return;
+      }
+      container.innerHTML = '<div class="result-box">Loading\u2026</div>';
+      try {
+        const res = await fetch(BASE + '/stats/' + code);
+        if (!res.ok) throw new Error('Server returned ' + res.status);
+        const data = await res.json();
+        const clicks = data.Clicks;
+        const displayDate = new Date(data.CreatedAt).toLocaleString();
+        container.innerHTML =
+          '<div class="stats-grid">' +
+            '<div class="stat-card"><div class="label">Clicks</div><div class="value">' + clicks + '</div></div>' +
+            '<div class="stat-card"><div class="label">Created</div><div class="value" style="font-size:15px;">' + displayDate + '</div></div>' +
+          '</div>';
+      } catch (e) {
+        container.innerHTML = '<div class="result-box"><span class="error">' + e.message + '</span></div>';
+      }
+    }
+
+    function renderHistory() {
+      const container = document.getElementById('history-list');
+      if (!history.length) return;
+      container.innerHTML = history.map(h =>
+        '<div class="history-item">' +
+          '<span class="short" onclick="document.getElementById(\'code-input\').value=\'' + h.code + '\';getStats()">' + h.code + '</span>' +
+          '<span class="original">' + h.url + '</span>' +
+        '</div>'
+      ).join('');
+    }
+
+    document.getElementById('url-input').addEventListener('keydown', e => { if (e.key === 'Enter') shortenUrl(); });
+    document.getElementById('code-input').addEventListener('keydown', e => { if (e.key === 'Enter') getStats(); });
+  </script>
+</body>
+</html>

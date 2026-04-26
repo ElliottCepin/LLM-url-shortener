@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -119,9 +120,6 @@ func TestStatsReturnsClickCountAndCreationDate(t *testing.T) {
 
 	h := handler()
 
-	// Record roughly when the shortcode was created so we can sanity-check
-	// the creation_date the server reports. Allow a small window on either
-	// side to account for clock resolution and request overhead.
 	before := time.Now().Add(-1 * time.Second)
 	code := createShortcode(t, h, originalURL)
 	after := time.Now().Add(1 * time.Second)
@@ -158,4 +156,106 @@ func TestStatsReturnsClickCountAndCreationDate(t *testing.T) {
 		t.Errorf("creation_date %v is outside expected window [%v, %v]",
 			stats.CreationDate, before, after)
 	}
+}
+
+// TestLoggingMiddlewareRecordsRequests verifies that the logging middleware
+// captures, for each handled request, the HTTP method, the action taken
+// (create/redirect/stats), the client IP, and a success indicator. One log
+// line is expected per request, and the log output must survive exercising
+// all three endpoints in sequence.
+func TestLoggingMiddlewareRecordsRequests(t *testing.T) {
+	const originalURL = "https://example.com"
+	const clientIP = "203.0.113.42"
+
+	var logBuf bytes.Buffer
+	h := handlerWithLogger(&logBuf)
+
+	// Helper to set a predictable RemoteAddr so the IP assertion is stable.
+	do := func(req *http.Request) *httptest.ResponseRecorder {
+		req.RemoteAddr = clientIP + ":12345"
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr
+	}
+
+	// 1. Create a shortcode.
+	createReq := httptest.NewRequest(http.MethodPost, "/shorten",
+		bytes.NewBufferString(`{"url": "`+originalURL+`"}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRR := do(createReq)
+	if createRR.Code != http.StatusOK {
+		t.Fatalf("setup: POST /shorten returned %d", createRR.Code)
+	}
+	code := strings.TrimSpace(createRR.Body.String())
+
+	// 2. Follow the redirect.
+	redirectRR := do(httptest.NewRequest(http.MethodGet, "/"+code, nil))
+	if redirectRR.Code != http.StatusMovedPermanently {
+		t.Fatalf("setup: GET /%s returned %d", code, redirectRR.Code)
+	}
+
+	// 3. Check stats.
+	statsRR := do(httptest.NewRequest(http.MethodGet, "/stats/"+code, nil))
+	if statsRR.Code != http.StatusOK {
+		t.Fatalf("setup: GET /stats/%s returned %d", code, statsRR.Code)
+	}
+
+	logOutput := logBuf.String()
+	if logOutput == "" {
+		t.Fatal("expected log output, got empty buffer")
+	}
+
+	// Expect one log line per request.
+	lines := strings.Split(strings.TrimRight(logOutput, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 log lines, got %d:\n%s", len(lines), logOutput)
+	}
+
+	// Every line must contain the client IP.
+	for i, line := range lines {
+		if !strings.Contains(line, clientIP) {
+			t.Errorf("log line %d missing client IP %q: %s", i, clientIP, line)
+		}
+	}
+
+	// Line 1: shortcode creation. Must mention POST and a "create"-style action.
+	if !strings.Contains(lines[0], http.MethodPost) {
+		t.Errorf("line 1 missing method POST: %s", lines[0])
+	}
+	if !containsAny(lines[0], "create", "created", "shorten") {
+		t.Errorf("line 1 missing create-style action: %s", lines[0])
+	}
+
+	// Line 2: redirect. Must mention GET and a "redirect"-style action.
+	if !strings.Contains(lines[1], http.MethodGet) {
+		t.Errorf("line 2 missing method GET: %s", lines[1])
+	}
+	if !containsAny(lines[1], "redirect", "followed") {
+		t.Errorf("line 2 missing redirect-style action: %s", lines[1])
+	}
+
+	// Line 3: stats lookup. Must mention GET and a "stats"-style action.
+	if !strings.Contains(lines[2], http.MethodGet) {
+		t.Errorf("line 3 missing method GET: %s", lines[2])
+	}
+	if !containsAny(lines[2], "stats", "checked") {
+		t.Errorf("line 3 missing stats-style action: %s", lines[2])
+	}
+
+	// All three actions succeeded, so every line must carry a success marker.
+	for i, line := range lines {
+		if !containsAny(line, "success", "true", "ok", "OK") {
+			t.Errorf("log line %d missing success indicator: %s", i, line)
+		}
+	}
+}
+
+// containsAny reports whether s contains any of the given substrings.
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
