@@ -188,11 +188,11 @@ func statsHandler(s *store) http.HandlerFunc {
 		}
 
 		resp := struct {
-			Clicks       int       `json:"clicks"`
-			CreationDate time.Time `json:"creation_date"`
+			Clicks       int       `json:"Clicks"`
+			CreatedAt time.Time `json:"CreatedAt"`
 		}{
 			Clicks:       clicks,
-			CreationDate: createdAt,
+			CreatedAt: createdAt,
 		}
 
 		w.Header().Set("Content-Type", "application/json")

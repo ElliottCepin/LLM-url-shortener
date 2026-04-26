@@ -141,8 +141,8 @@ func TestStatsReturnsClickCountAndCreationDate(t *testing.T) {
 	}
 
 	var stats struct {
-		Clicks       int       `json:"clicks"`
-		CreationDate time.Time `json:"creation_date"`
+		Clicks       int       `json:"Clicks"`
+		CreatedAt time.Time `json:"CreatedAt"`
 	}
 	if err := json.NewDecoder(rr.Body).Decode(&stats); err != nil {
 		t.Fatalf("failed to decode JSON response: %v", err)
@@ -152,9 +152,9 @@ func TestStatsReturnsClickCountAndCreationDate(t *testing.T) {
 		t.Errorf("expected %d clicks, got %d", expectedClicks, stats.Clicks)
 	}
 
-	if stats.CreationDate.Before(before) || stats.CreationDate.After(after) {
+	if stats.CreatedAt.Before(before) || stats.CreatedAt.After(after) {
 		t.Errorf("creation_date %v is outside expected window [%v, %v]",
-			stats.CreationDate, before, after)
+			stats.CreatedAt, before, after)
 	}
 }
 
